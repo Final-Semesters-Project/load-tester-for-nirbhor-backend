@@ -5,14 +5,9 @@ import json
 # locust -f locustfile.py --host http://localhost:8000
 
 # ── Seeder data ────────────────────────────────────────────────────────────────
-# These must exist in your local DB before running the load test.
-# Run your seed script first: the test DB should have at least:
-#   - 1 seeker account with phone 01700000001
-#   - 1 provider account with phone 01800000001
-#   - Categories and skills seeded
 
-SEEKER_PHONE = "01700000001"
-PROVIDER_PHONE = "01800000001"
+# SEEKER_PHONE = "01700000001"
+# PROVIDER_PHONE = "01800000001"
 PASSWORD = "password123"
 
 # Dhaka coordinates — used for all location-based requests
@@ -107,7 +102,14 @@ class SeekerUser(AuthenticatedUser):
     """
     weight = 3
     wait_time = between(1, 4)
-    phone = SEEKER_PHONE
+    # phone = SEEKER_PHONE
+
+    def on_start(self):
+        # Each simulated user picks a random test account
+        # This prevents concurrent login collisions even without the jti fix
+        suffix = str(random.randint(1, 10)).zfill(3)  # 001 to 010
+        self.phone = f"017000000{suffix}"
+        super().on_start()
 
     @task(5)
     def browse_categories(self):
@@ -186,7 +188,12 @@ class ProviderUser(AuthenticatedUser):
     """
     weight = 1
     wait_time = between(2, 6)  # providers check less frequently than seekers
-    phone = PROVIDER_PHONE
+    # phone = PROVIDER_PHONE
+
+    def on_start(self):
+        suffix = str(random.randint(1, 5)).zfill(2)   # 01 to 05
+        self.phone = f"0180000000{suffix}"
+        super().on_start()
 
     @task(4)
     def check_dashboard(self):
@@ -234,7 +241,7 @@ class AnonymousUser(AuthenticatedUser):
     """
     weight = 1
     wait_time = between(1, 2)
-    phone = SEEKER_PHONE   # not used since we override on_start
+    # phone = SEEKER_PHONE   # not used since we override on_start
 
     def on_start(self):
         """Anonymous users don't log in."""
