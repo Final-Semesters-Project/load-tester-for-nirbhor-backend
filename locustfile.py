@@ -6,8 +6,6 @@ import json
 
 # ── Seeder data ────────────────────────────────────────────────────────────────
 
-# SEEKER_PHONE = "01700000001"
-# PROVIDER_PHONE = "01800000001"
 PASSWORD = "password123"
 
 # Dhaka coordinates — used for all location-based requests
@@ -102,13 +100,12 @@ class SeekerUser(AuthenticatedUser):
     """
     weight = 3
     wait_time = between(1, 4)
-    # phone = SEEKER_PHONE
 
     def on_start(self):
         # Each simulated user picks a random test account
         # This prevents concurrent login collisions even without the jti fix
         suffix = str(random.randint(1, 10)).zfill(3)  # 001 to 010
-        self.phone = f"017000000{suffix}"
+        self.phone = f"01700000{suffix}"
         super().on_start()
 
     @task(5)
@@ -192,7 +189,7 @@ class ProviderUser(AuthenticatedUser):
 
     def on_start(self):
         suffix = str(random.randint(1, 5)).zfill(2)   # 01 to 05
-        self.phone = f"0180000000{suffix}"
+        self.phone = f"018000000{suffix}"
         super().on_start()
 
     @task(4)
