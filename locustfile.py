@@ -106,7 +106,30 @@ class SeekerUser(AuthenticatedUser):
         # This prevents concurrent login collisions even without the jti fix
         suffix = str(random.randint(1, 10)).zfill(3)  # 001 to 010
         self.phone = f"01700000{suffix}"
+        self.provider_id = None
         super().on_start()
+        self._load_provider_id()
+
+    def _load_provider_id(self):
+        """Fetch a real provider_id to use in booking initiation."""
+        if not self.token or not self.skill_ids:
+            return
+        r = self.client.get(
+            "/api/v1/search/providers",
+            params={
+                "skill_id": self.skill_ids[0],
+                "seeker_lat": SEEKER_LAT,
+                "seeker_lng": SEEKER_LNG,
+                "search_radius_km": 5,
+            },
+            headers=self.auth_headers,
+            name="/api/v1/search/providers (setup)",
+        )
+        if r.status_code == 200:
+            providers = r.json().get("providers", [])
+            if providers:
+                # Pick random provider from results
+                self.provider_id = random.choice(providers)["user_id"]
 
     @task(5)
     def browse_categories(self):
@@ -163,6 +186,53 @@ class SeekerUser(AuthenticatedUser):
             headers=self.auth_headers,
         )
 
+    @task(2)
+    def initiate_and_cancel_booking(self):
+        """
+        Full write cycle: initiate a booking then immediately cancel it.
+        Tests: INSERT into bookings + UPDATE status
+        Requires: at least one provider exists in DB
+        """
+        if not self.skill_ids:
+            return
+
+        # Step 1: Initiate booking (POST — DB write)
+        initiate_response = self.client.post(
+            "/api/v1/bookings/initiate",
+            json={
+                "provider_id": self.provider_id,
+                "skill_id": random.choice(self.skill_ids),
+                "latitude": SEEKER_LAT + random.uniform(-0.01, 0.01),
+                "longitude": SEEKER_LNG + random.uniform(-0.01, 0.01),
+            },
+            headers=self.auth_headers,
+            catch_response=True,
+            name="/api/v1/bookings/initiate",
+        )
+
+        if initiate_response.status_code == 201:
+            booking_id = initiate_response.json().get("booking_id")
+            initiate_response.success()
+
+            # Step 2: Cancel it immediately (PATCH — DB write)
+            # This simulates a seeker who called but provider didn't pick up
+            if booking_id:
+                self.client.patch(
+                    f"/api/v1/bookings/{booking_id}/respond",
+                    json={"hired": False, "work_schedule": None},
+                    headers=self.auth_headers,
+                    name="/api/v1/bookings/{id}/respond",
+                )
+        else:
+            # 409 means already has an open booking — cancel existing first
+            if initiate_response.status_code == 409:
+                initiate_response.success()  # expected, not a failure
+            else:
+                initiate_response.failure(
+                    f"Initiate failed: {initiate_response.status_code} "
+                    f"{initiate_response.text[:100]}"
+                )
+
     @task(1)
     def view_own_profile(self):
         """Seeker opens profile page."""
@@ -171,6 +241,25 @@ class SeekerUser(AuthenticatedUser):
             headers=self.auth_headers,
         )
 
+    @task(1)
+    def submit_urgent_broadcast(self):
+        """
+        Creates an urgent broadcast — INSERT into urgent_broadcasts + FCM query.
+        One of the heaviest write operations (geospatial query + potential FCM).
+        """
+        if not self.skill_ids:
+            return
+
+        self.client.post(
+            "/api/v1/urgentBroadcast/broadcast",
+            json={
+                "skill_id": random.choice(self.skill_ids),
+                "latitude": SEEKER_LAT + random.uniform(-0.02, 0.02),
+                "longitude": SEEKER_LNG + random.uniform(-0.02, 0.02),
+            },
+            headers=self.auth_headers,
+            name="/api/v1/urgentBroadcast/broadcast",
+        )
 
 # ── Provider user ──────────────────────────────────────────────────────────────
 
@@ -207,6 +296,24 @@ class ProviderUser(AuthenticatedUser):
             "/api/v1/bookings/provider/me",
             params={"page": 1, "page_size": 20},
             headers=self.auth_headers,
+        )
+
+    @task(2)
+    def update_location(self):
+        """
+        Updates provider location — writes to provider_profiles.
+        Has a 7-day rate limit in your business logic, so most will 400.
+        Still loads the DB with UPDATE attempts and business logic checks.
+        """
+        self.client.patch(
+            "/api/v1/provider/me/update_profile",
+            json={
+                "latitude": 23.7540 + random.uniform(-0.05, 0.05),
+                "longitude": 90.3950 + random.uniform(-0.05, 0.05),
+                "working_radius_km": random.choice([3, 5, 7, 10]),
+            },
+            headers=self.auth_headers,
+            name="/api/v1/provider/me/update_profile (location)",
         )
 
     @task(1)
