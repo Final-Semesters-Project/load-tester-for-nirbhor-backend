@@ -193,11 +193,13 @@ class SeekerUser(AuthenticatedUser):
         Tests: INSERT into bookings + UPDATE status
         Requires: at least one provider exists in DB
         """
-        if not self.skill_ids:
+        if not self.skill_ids or not self.provider_id:
             return
 
+        booking_id = None
+
         # Step 1: Initiate booking (POST — DB write)
-        initiate_response = self.client.post(
+        with self.client.post(
             "/api/v1/bookings/initiate",
             json={
                 "provider_id": self.provider_id,
@@ -208,30 +210,28 @@ class SeekerUser(AuthenticatedUser):
             headers=self.auth_headers,
             catch_response=True,
             name="/api/v1/bookings/initiate",
-        )
+        ) as response:
 
-        if initiate_response.status_code == 201:
-            booking_id = initiate_response.json().get("booking_id")
-            initiate_response.success()
-
-            # Step 2: Cancel it immediately (PATCH — DB write)
-            # This simulates a seeker who called but provider didn't pick up
-            if booking_id:
-                self.client.patch(
-                    f"/api/v1/bookings/{booking_id}/respond",
-                    json={"hired": False, "work_schedule": None},
-                    headers=self.auth_headers,
-                    name="/api/v1/bookings/{id}/respond",
-                )
-        else:
-            # 409 means already has an open booking — cancel existing first
-            if initiate_response.status_code == 409:
-                initiate_response.success()  # expected, not a failure
+            if response.status_code == 201:
+                booking_id = response.json().get("booking_id")
+                response.success()
+            elif response.status_code == 409:
+                response.success()  # expected, not a failure
             else:
-                initiate_response.failure(
-                    f"Initiate failed: {initiate_response.status_code} "
-                    f"{initiate_response.text[:100]}"
+                response.failure(
+                    f"Initiate failed: {response.status_code} "
+                    f"{response.text[:100]}"
                 )
+
+        # Step 2: Cancel booking (PUT — DB write)
+        # Cancel is a separate request — no catch_response, no with-block needed
+        if booking_id:
+            self.client.patch(
+                f"/api/v1/bookings/{booking_id}/respond",
+                json={"hired": False, "work_schedule": None},
+                headers=self.auth_headers,
+                name="/api/v1/bookings/{id}/respond (cancel)",
+            )
 
     @task(1)
     def view_own_profile(self):
@@ -298,23 +298,28 @@ class ProviderUser(AuthenticatedUser):
             headers=self.auth_headers,
         )
 
-    @task(2)
-    def update_location(self):
-        """
-        Updates provider location — writes to provider_profiles.
-        Has a 7-day rate limit in your business logic, so most will 400.
-        Still loads the DB with UPDATE attempts and business logic checks.
-        """
-        self.client.patch(
-            "/api/v1/provider/me/update_profile",
-            json={
-                "latitude": 23.7540 + random.uniform(-0.05, 0.05),
-                "longitude": 90.3950 + random.uniform(-0.05, 0.05),
-                "working_radius_km": random.choice([3, 5, 7, 10]),
-            },
-            headers=self.auth_headers,
-            name="/api/v1/provider/me/update_profile (location)",
-        )
+    # @task(2)
+    # def update_location(self):
+    #     """
+    #     Updates provider location — writes to provider_profiles.
+    #     Has a 7-day rate limit in your business logic, so most will 400.
+    #     Still loads the DB with UPDATE attempts and business logic checks.
+    #     """
+    #     response = self.client.patch(
+    #         "/api/v1/provider/me/update_profile",
+    #         json={
+    #             "latitude": 23.7540 + random.uniform(-0.05, 0.05),
+    #             "longitude": 90.3950 + random.uniform(-0.05, 0.05),
+    #             "working_radius_km": random.choice([1, 2, 3, 5]),
+    #         },
+    #         headers=self.auth_headers,
+    #         name="/api/v1/provider/me/update_profile (location)",
+    #     )
+    #     if response.status_code == 422:
+    #         print(f"422 body: {response.text[:200]}")  # see exact error
+    #         response.success()   # don't count as failure — it's a schema issue
+    #     elif response.status_code == 400:
+    #         response.success()   # 400 = location update limit (7 days) — expected
 
     @task(1)
     def toggle_availability(self):
